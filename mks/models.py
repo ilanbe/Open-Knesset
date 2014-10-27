@@ -12,8 +12,8 @@ from knesset.utils import cannonize
 from links.models import Link
 import difflib
 from mks.managers import (
-    BetterManager, KnessetManager, CurrentKnessetMembersManager,
-    CurrentKnessetPartyManager)
+    BetterManager, PartyManager, KnessetManager, CurrentKnessetMembersManager,
+    CurrentKnessetPartyManager, MembershipManager)
 
 GENDER_CHOICES = (
     (u'M', _('Male')),
@@ -74,7 +74,7 @@ class Party(models.Model):
 
     logo = models.ImageField(blank=True,null=True,upload_to='partyLogos')
 
-    objects = BetterManager()
+    objects = PartyManager()
     current_knesset = CurrentKnessetPartyManager()
 
     class Meta:
@@ -155,6 +155,7 @@ class Membership(models.Model):
     end_date = models.DateField(blank=True, null=True)
     position = models.PositiveIntegerField(blank=True, default=999)
 
+    objects = MembershipManager()
     def __unicode__(self):
         return "%s-%s (%s-%s)" % (self.member.name, self.party.name, str(self.start_date), str(self.end_date))
 
@@ -300,40 +301,47 @@ class Member(models.Model):
         return ", ".join(strings)
 
     def service_time(self):
-        """returns the number of days this MK has been serving in the current knesset"""
+        """returns the number of days this MK has been serving in the current
+           knesset
+        """
         if not self.start_date:
             return 0
+        d = Knesset.objects.current_knesset().start_date
+        start_date = max(self.start_date, d)
         if self.is_current:
-            return (date.today() - self.start_date).days
+            end_date = date.today()
         else:
             try:
-                return (self.end_date - self.start_date).days
+                end_date = self.end_date
             except TypeError:
                 logger.warn(
                     'MK %d is not current, but missing end or start date' %
                     self.id)
                 return None
+        return (end_date - start_date).days
 
     def average_weekly_presence(self):
+        d = Knesset.objects.current_knesset().start_date
         hours = WeeklyPresence.objects.filter(
+            date__gt=d,
             member=self).values_list('hours', flat=True)
         if len(hours):
             return round(sum(hours) / len(hours), 1)
         else:
             return None
 
-    def committee_meetings_count(self):
-        return self.committee_meetings.count()
-
     def committee_meetings_per_month(self):
+        d = Knesset.objects.current_knesset().start_date
         service_time = self.service_time()
         if not service_time or not self.id:
             return 0
-        return round(self.committee_meetings.count() * 30.0 / self.service_time(), 2)
+        return round(self.committee_meetings.filter(
+            date__gt=d).count() * 30.0 / service_time, 2)
 
     @models.permalink
     def get_absolute_url(self):
-        return ('member-detail-with-slug', [str(self.id), self.name_with_dashes()])
+        return ('member-detail-with-slug',
+                [str(self.id), self.name_with_dashes()])
 
     def NameWithLink(self):
         return '<a href="%s">%s</a>' % (self.get_absolute_url(), self.name)
@@ -366,11 +374,11 @@ class Member(models.Model):
 
         return [x.strip() for x in self.get_role.split('|')]
 
-	@property
-	def committees(self):
-		"""Committee list (splitted by comma)"""
+    @property
+    def committees(self):
+        """Committee list (splitted by comma)"""
 
-		return [x.strip() for x in self.committees.split(',')]
+        return [x.strip() for x in self.committees.split(',')]
 
     @property
     def is_minister(self):
@@ -451,6 +459,15 @@ class Member(models.Model):
     def age(self):
         return relativedelta(date.today(), self.date_of_birth)
 
+    @property
+    def awards(self):
+        return self.awards_and_convictions.filter(award_type__valence__gt=0)
+
+    @property
+    def convictions(self):
+        return self.awards_and_convictions.filter(award_type__valence__lt=0)
+
+
 
 class WeeklyPresence(models.Model):
     member = models.ForeignKey('Member')
@@ -464,6 +481,28 @@ class WeeklyPresence(models.Model):
     def save(self, **kwargs):
         super(WeeklyPresence, self).save(**kwargs)
         self.member.recalc_average_weekly_presence_hours()
+
+
+class AwardType(models.Model):
+    name = models.CharField(max_length=100)
+    valence = models.FloatField(default=0)
+    description = models.TextField(blank=True)
+
+    def __unicode__(self):
+        return u"%s (%d)" % (self.name, self.valence)
+
+
+class Award(models.Model):
+    award_type = models.ForeignKey('AwardType', related_name='awards')
+    member = models.ForeignKey('Member', related_name='awards_and_convictions')
+    date_given = models.DateField()
+    reference = models.URLField(blank=True, max_length=1000)
+
+    def __unicode__(self):
+        return u"%s - %s" % (self.member, self.award_type)
+
+    class Meta:
+        ordering = ('-date_given', )
 
 # force signal connections
 from listeners import *

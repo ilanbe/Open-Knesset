@@ -132,26 +132,30 @@ def getAgendaEditorIds():
     return results
 
 BASE_AGENDA_QUERY = """ 
-INSERT INTO agendas_summaryagenda (month,summary_type,agenda_id,score,votes,db_created,db_updated)
+INSERT INTO agendas_summaryagenda (month,summary_type,agenda_id,score,votes,for_votes,against_votes,db_created,db_updated)
 SELECT  %(monthfunc)s,v.time) as month,
         'AG' as summary_type,
         a.agenda_id               agid,
         SUM(abs(a.score * a.importance)) sc,
         COUNT(*) numvotes,
+        COUNT(*) numforvotes,
+        COUNT(*) numagainstvotes,
         %(nowfunc)s,%(nowfunc)s
 FROM   agendas_agendavote a
 INNER JOIN laws_vote v ON a.vote_id = v.id
 GROUP  BY %(monthfunc)s,v.time),a.agenda_id """
 
 BASE_MK_QUERY = """
-INSERT INTO agendas_summaryagenda (summary_type,agenda_id,mk_id,month,score,votes,db_created,db_updated)
+INSERT INTO agendas_summaryagenda (summary_type,agenda_id,mk_id,month,score,votes,for_votes,against_votes,db_created,db_updated)
 SELECT 'MK' as summary_type,
        agenda_id,
        memberid,
        %(monthfunc)s,time) as month,
        SUM(forvotes) - SUM(againstvotes) totalvotevalue,
-      SUM(numvotes) numvotes,
-      %(nowfunc)s,%(nowfunc)s
+       SUM(numvotes) numvotes,
+       SUM(numforvotes) numforvotes,
+       SUM(numagainstvotes) numagainstvotes,
+       %(nowfunc)s,%(nowfunc)s
 FROM
   (SELECT a.agenda_id,
           p.memberid,
@@ -164,7 +168,15 @@ FROM
               WHEN 'against' THEN a.VALUE
               ELSE 0
           END againstvotes,
-          1 as numvotes
+          1 as numvotes,
+          CASE p.vtype
+              WHEN 'for' THEN 1
+              ELSE 0
+          END numforvotes,
+          CASE p.vtype
+              WHEN 'against' THEN 1
+              ELSE 0
+          END numagainstvotes          
    FROM
      (SELECT DISTINCT
              m.id memberid,
@@ -189,3 +201,60 @@ GROUP BY agenda_id,
          memberid,
          %(monthfunc)s,time)
 """
+
+BASE_PARTY_QUERY = """
+INSERT INTO agendas_summaryagenda (summary_type,agenda_id,party_id,month,score,votes,for_votes,against_votes,db_created,db_updated)
+SELECT 'PR' as summary_type,
+       agenda_id,
+       partyid,
+       %(monthfunc)s,time) as month,
+       SUM(forvotes) - SUM(againstvotes) totalvotevalue,
+       SUM(numvotes) numvotes,
+       SUM(numforvotes) numforvotes,
+       SUM(numagainstvotes) numagainstvotes,
+       %(nowfunc)s,%(nowfunc)s
+FROM
+  (SELECT a.agenda_id,
+          p.partyid,
+          a.time,
+          a.vote_id,
+          CASE p.vtype
+              WHEN 'for' THEN a.VALUE
+              ELSE 0
+          END forvotes,
+          CASE p.vtype
+              WHEN 'against' THEN a.VALUE
+              ELSE 0
+          END againstvotes,
+          1 as numvotes,
+          CASE p.vtype
+              WHEN 'for' THEN 1
+              ELSE 0
+          END numforvotes,
+          CASE p.vtype
+            WHEN 'against' THEN 1
+              ELSE 0
+          END numagainstvotes          
+    FROM
+     (SELECT v.party_id partyid,
+             v.vote_id voteid,
+             v.TYPE vtype
+      FROM laws_voteaction v
+      WHERE v.TYPE IN ('for',
+                       'against')
+       GROUP BY v.party_id,
+               v.vote_id,
+               v.TYPE) p
+   INNER JOIN
+     (SELECT a.vote_id,
+             a.agenda_id,
+             a.score * a.importance AS VALUE,
+             v.time as time
+      FROM agendas_agendavote a
+      JOIN laws_vote v ON a.vote_id = v.id) a ON p.voteid = a.vote_id
+      ) b
+GROUP BY agenda_id,
+         partyid,
+         %(monthfunc)s,time)
+"""
+

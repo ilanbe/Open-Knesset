@@ -25,12 +25,14 @@ class CommitteeMeetingDetailViewTest(TestCase):
         self.committee_1 = Committee.objects.create(name='c1')
         self.committee_2 = Committee.objects.create(name='c2')
         self.meeting_1 = self.committee_1.meetings.create(date=datetime.now(),
+                                 topics = "django",
                                  protocol_text='''jacob:
 I am a perfectionist
 adrian:
 I have a deadline''')
         self.meeting_1.create_protocol_parts()
         self.meeting_2 = self.committee_1.meetings.create(date=datetime.now(),
+                                                         topics = "python",
                                                          protocol_text='m2')
         self.meeting_2.create_protocol_parts()
         self.jacob = User.objects.create_user('jacob', 'jacob@example.com',
@@ -81,12 +83,11 @@ I have a deadline''')
         self.assertEqual(annotation.selection, 'perfect')
         # ensure the activity has been recorded
         stream = Action.objects.stream_for_actor(self.jacob)
-        self.assertEqual(stream.count(), 3)
+        self.assertEqual(stream.count(), 2)
         self.assertEqual(stream[0].verb, 'started following')
         self.assertEqual(stream[0].target.id, self.meeting_1.id)
-        self.assertEqual(stream[1].verb, 'got badge')
-        self.assertEqual(stream[2].verb, 'annotated')
-        self.assertEqual(stream[2].target.id, annotation.id)
+        self.assertEqual(stream[1].verb, 'annotated')
+        self.assertEqual(stream[1].target.id, annotation.id)
         # ensure we will see it on the committee page
         annotations = self.committee_1.annotations
         self.assertEqual(annotations.count(), 1)
@@ -94,7 +95,7 @@ I have a deadline''')
         # test the deletion of an annotation
         annotation.delete()
         stream = Action.objects.stream_for_actor(self.jacob)
-        self.assertEqual(stream.count(), 2)
+        self.assertEqual(stream.count(), 1)
 
     def testTwoAnnotations(self):
         '''create two annotations on same part, and delete them'''
@@ -150,7 +151,7 @@ I have a deadline''')
                          'object_id': part.id,
                          'content_type': ContentType.objects.get_for_model(part).id,
                         })
-        self.assertEqual(res.status_code, 403) # 403 Forbidden. 302 means a user with unverified email has posted an annotation. 
+        self.assertEqual(res.status_code, 403) # 403 Forbidden. 302 means a user with unverified email has posted an annotation.
 
     def testCommitteeList(self):
         res = self.client.get(reverse('committee-list'))
@@ -255,6 +256,11 @@ I have a deadline''')
         self.assertIn(self.new_tag, self.meeting_1.tags)
 
     def test_committeemeeting_by_tag(self):
+        res = self.client.get('%s?tagged=false' % reverse('committee-all-meetings'))
+        self.assertQuerysetEqual(res.context['object_list'],
+                                 ['<CommitteeMeeting: c1 - python>',
+                                  '<CommitteeMeeting: c1 - django>'],
+                                 )
         self.ti = TaggedItem._default_manager.create(
             tag=self.tag_1,
             content_type=ContentType.objects.get_for_model(CommitteeMeeting),
@@ -265,7 +271,10 @@ I have a deadline''')
         tag = res.context['tag']
         self.assertEqual(tag, self.tag_1)
         self.assertQuerysetEqual(res.context['object_list'],
-                                 ['<CommitteeMeeting: c1 - None>'])
+                                 ['<CommitteeMeeting: c1 - django>'])
+        res = self.client.get('%s?tagged=false' % reverse('committee-all-meetings'))
+        self.assertQuerysetEqual(res.context['object_list'],
+                                 ['<CommitteeMeeting: c1 - python>'])
         # cleanup
         self.ti.delete()
 
@@ -403,11 +412,11 @@ I have a deadline''')
         res = self.client.get(reverse('topic-list'))
         self.assertEqual(res.status_code, 200)
         self.assertTemplateUsed(res, 'committees/topic_list.html')
-        self.assertQuerysetEqual(res.context['topics'],
+        self.assertQuerysetEqual(res.context['topics'].order_by('pk'),
                                  ["<Topic: hello>", "<Topic: bye>"])
 
     def testRanking(self):
-        self.assertQuerysetEqual(Topic.objects.all(),
+        self.assertQuerysetEqual(Topic.objects.order_by('pk'),
                                  ["<Topic: hello>", "<Topic: bye>"])
         self.topic2.rating.add(score=4, user=self.ofri, ip_address="127.0.0.1")
         self.assertQuerysetEqual(Topic.objects.by_rank(),

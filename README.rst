@@ -1,3 +1,6 @@
+.. image:: https://travis-ci.org/hasadna/Open-Knesset.svg?branch=master
+    :target: https://travis-ci.org/hasadna/Open-Knesset
+    
 .. important::
 
     This document contains quick start instruction.
@@ -46,16 +49,10 @@ Linux
       sudo yum install git python python-devel python-setuptools python-virtualenv python-pip libjpeg-turbo-devel libpng-devel libxml2-devel libxslt-devel
 
 
-- If you haven't done so already:
+- If you haven't done so already::
 
-  - ``git config --local user.name "Your Name"``
-  - ``git config --local user.email "your@email.com"``
-
-- Create the virtual environment. In the terminal cd to the directory you want
-  the environment create it and run ``virtualenv oknesset``.
-
-- Activate the virutalenv ``cd oknesset; . bin/activate`` Note the changed
-  prompt which includes the virtualenv's name.
+    git config --local user.name "Your Name"
+    git config --local user.email "your@email.com"
 
 - Clone the repository::
 
@@ -63,13 +60,19 @@ Linux
 
   This creates a copy of the project on your local machine.
 
-- Install required packages: ``pip install -r Open-Knesset/requirements.txt``
-  and wait ...
-- Run the tests::
+- Create the virtual environment, activate it and install dependecies::
 
     cd Open-Knesset
+    virtualenv .
+    . bin/activate
+    pip install -r requirements.txt
+
+  and wait ...
+
+- Run the tests::
+
     python manage.py test
-    
+
 
 MS Windows
 -----------
@@ -83,8 +86,8 @@ MS Windows
     easy_install pip
     pip install virtualenv
 
-- Download and install the installers matching your architecture for PIL_
-  and lxml_ (version 2.3.x).
+- Download and install the installers matching your architecture for PIL_,
+  lxml_ (version 2.3.x) and ujson_.
 - Download and install `GitHub for Windows`_.
 - Run the GitHub program (should have an icon on the desktop). Sign in
   with your username and password.
@@ -115,6 +118,7 @@ MS Windows
 .. _PIL: http://www.lfd.uci.edu/~gohlke/pythonlibs/#pil
 .. _lxml: http://www.lfd.uci.edu/~gohlke/pythonlibs/#lxml
 .. _GitHub for Windows: http://windows.github.com
+.. _ujson: http://www.lfd.uci.edu/~gohlke/pythonlibs/#ujson
 
 
 OS X
@@ -127,10 +131,10 @@ OS X
 
     sudo easy_install pip
     sudo pip install virtualenv
-- Install homebrew: ``ruby -e "$(curl -fsSkL raw.github.com/mxcl/homebrew/go)"``
+- Install homebrew: ``ruby -e "$(curl -fsSL https://raw.github.com/Homebrew/homebrew/go/install)"``
 - Install binary python libraries build dependencies::
 
-  brew install jpeg libpng libxml2 libxslt
+    brew install jpeg libpng libxml2 libxslt
 
 - We need UTF-8, Add locale settings (in case you're not UTF-8),
   put in your ``~/.profile``::
@@ -199,6 +203,21 @@ Working process
 
 Let's describe some development workflow.
 
+Commits and Pull Requests
+----------------------------------------
+
+Make it easier for you and the maintainers, increasing the chances of a pull
+request getting accepted:
+
+- No big Pull Requests. It makes reviewing and ensuring correctness hard. If
+  possible, break it to smaller commits/pulls, each related to a specific issue.
+- Always work on a specific issue from our `issue tracker`_. Open new issue if
+  needed and claim it in the comments.
+- Discuss big things in the `Open Knesset Developers group`_.
+
+.. _issue tracker: https://github.com/hasadna/Open-Knesset/issues?state=open
+.. _Open Knesset Developers group: https://groups.google.com/forum/#!forum/oknesset-dev
+
 Before you code
 ----------------
 
@@ -212,7 +231,7 @@ Get your branch updated with the changes done by others.
 Please do this every time before you start developing.
 
 - ``cd Open-Knesset``
-- ``git pull git@github.com:hasadna/Open-Knesset.git master``
+- ``git pull git@github.com:hasadna/Open-Knesset.git master``   Running this command requires having SSH keys registered with github. You can replace 'git@' with 'https://' instead.
 - ``pip install -r requirements.txt``  # only needed if the file requirements.txt was changed; but can't hurt you if you run it every time.
 - ``python manage.py migrate``              # do not create a superuser account
 - ``python manage.py test``                 # if there are any failures, contact the other developers to see if that's something you should worry about.
@@ -238,8 +257,7 @@ We use south to manage database migration. The work process looks something like
 - ``python manage.py schemamigration sample_app --auto`` this generates a new
   migration under `src/knesset/sample_app/migrations`. You should review it to
   make sure it does what you expect.
-- ``python manage.py --migrate`` To run un the migration (make the changes on
-  the db).
+- ``python manage.py migrate`` To run the migration (make the changes on the db).
 - don't forget to git add/commit the migration file.
 
 Updating the translation strings

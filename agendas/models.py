@@ -16,7 +16,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from actstream.models import Follow
 from laws.models import VoteAction, Vote
-from mks.models import Party, Member, Knesset
+from mks.models import Party, Member, Knesset, Membership
 import queries
 
 AGENDAVOTE_SCORE_CHOICES = (
@@ -60,6 +60,9 @@ class AgendaVoteManager(models.Manager):
 
         mk_query = queries.BASE_MK_QUERY % db_functions
         cursor.execute(mk_query)
+        
+        party_query = queries.BASE_PARTY_QUERY % db_functions
+        cursor.execute(party_query)
 
 
 class AgendaVote(models.Model):
@@ -120,13 +123,15 @@ class AgendaVote(models.Model):
                                           summary_type='MK',
                                           mk_id=vote_action.member_id,
                                           votes=1,
-                                          score=agendaScore * (1 if vote_action.type == 'for' else -1))
+                                          score=agendaScore * (1 if vote_action.type == 'for' else -1),
+                                          for_votes=(1 if vote_action.type == 'for' else 0),
+                                          against_votes=(1 if vote_action.type == 'against' else 0))
                 newObjects.append(mkSummary)
             else:
                 voters[vote_action.type].append(vote_action.member_id)
 
-        SummaryAgenda.objects.filter(mk_id__in=voters['for']).update(votes=F('votes') + 1, score=F('score')+agendaScore)
-        SummaryAgenda.objects.filter(mk_id__in=voters['against']).update(votes=F('votes') + 1, score=F('score')-agendaScore)
+        SummaryAgenda.objects.filter(agenda=self.agenda,mk_id__in=voters['for'],month=objMonth).update(votes=F('votes') + 1, score=F('score')+agendaScore, for_votes=F('for_votes') + 1)
+        SummaryAgenda.objects.filter(agenda=self.agenda,mk_id__in=voters['against'],month=objMonth).update(votes=F('votes') + 1, score=F('score')-agendaScore, against_votes=F('against_votes') + 1)
         if newObjects:
             SummaryAgenda.objects.bulk_create(newObjects)
 
@@ -341,27 +346,11 @@ class Agenda(models.Model):
         return ('agenda-detail-edit', [str(self.id)])
 
     def member_score(self, member):
-        # Find all votes that
-        #   1) This agenda is ascribed to
-        #   2) the member participated in and either voted for or against
-        qs = AgendaVote.objects.filter(
-            agenda = self,
-            vote__voteaction__member = member,
-            vote__voteaction__type__in=['for','against']).extra(
-                select={'weighted_score':'agendas_agendavote.score*agendas_agendavote.importance'}
-            ).values_list('weighted_score','vote__voteaction__type')
-
-        for_score = against_score = 0
-        for score, action_type in qs:
-            if action_type == 'against':
-                against_score += score
-            else:
-                for_score += score
-
-        max_score = sum([abs(x.score*x.importance) for x in
-                         self.agendavotes.all()])
-        if max_score > 0:
-            return (for_score - against_score) / max_score * 100
+        values = self.get_mks_values(mks=[member])
+        if values:
+            if len(values)>1:
+                raise Member.MultipleObjectsReturned
+            return values[0][1]['score']
         else:
             return 0.0
 
@@ -456,18 +445,26 @@ class Agenda(models.Model):
         instances['bottom'].sort(key=attrgetter('score'), reverse=True)
         return instances
 
-    def generateSummaryFilters(self,ranges):
-        results = []
+    @staticmethod
+    def generateSummaryFilters(ranges, start_fieldname, end_fieldname):
+        if not ranges:
+            return
+        filter_list = []
         for r in ranges:
             if not r[0] and not r[1]:
-                return None # might as well not filter at all
-            queryFields = {}
+                return None  # might as well not filter at all
+            query_fields = {}
             if r[0]:
-                queryFields['month__gte']=r[0]
+                query_fields[start_fieldname + '__gte']=r[0]
             if r[1]:
-                queryFields['month__lt']=r[1]
-            results.append(Q(**queryFields))
-        return results
+                query_fields[end_fieldname + '__lt']=r[1]
+            filter_list.append(Q(**query_fields))
+
+        if len(filter_list) == 1:
+            filters_folded = filter_list[0]
+        else:  # len(filter_list) > 1
+            filters_folded = reduce(lambda x, y: x | y, filter_list)
+        return filters_folded
 
     def get_mks_totals(self, member):
         "Get count for each vote type for a specific member on this agenda"
@@ -481,28 +478,31 @@ class Agenda(models.Model):
 
         return qs
 
-    def get_mks_values(self,ranges=None):
+    def get_mks_values(self, ranges=None, mks=None):
         if ranges is None:
             ranges = [[dateMonthTruncate(Knesset.objects.current_knesset().start_date),None]]
         mks_values = False
+        mk_ids = [mk.id for mk in mks] if mks else []
+
         fullRange = ranges == [[None,None]]
         if fullRange:
             mks_values = cache.get('agenda_%d_mks_values' % self.id)
+            if mks_values and mks:
+                mks_values = [(mk_id, values)
+                              for (mk_id, values) in mks_values
+                              if mk_id in mk_ids]
+
         if not mks_values:
             # get list of mk ids
-            mk_ids = Member.objects.filter(current_party__isnull=False).values_list('id',flat=True)
+            mk_ids = mk_ids or Membership.objects.membership_in_range(ranges)
 
             # generate summary query
-            filterList = self.generateSummaryFilters(ranges)
+            filters_folded = self.generateSummaryFilters(ranges, 'month', 'month')
 
             # query summary
             baseQuerySet = SummaryAgenda.objects.filter(agenda=self)
-            if filterList:
-                if len(filterList)>1:
-                    filtersFolded = reduce(lambda x,y:x | y, filterList)
-                else:
-                    filtersFolded = filterList[0]
-                baseQuerySet.filter(filtersFolded)
+            if filters_folded:
+                baseQuerySet.filter(filters_folded)
             summaries = list(baseQuerySet)
             # group summaries for respective ranges
             summariesForRanges = []
@@ -519,6 +519,8 @@ class Agenda(models.Model):
             for summaries in summariesForRanges:
                 agenda_data             = summaries['AG']
                 total_votes             = sum(map(attrgetter('votes'),agenda_data))
+                total_for_votes         = sum(map(attrgetter('for_votes'),agenda_data))
+                total_against_votes     = sum(map(attrgetter('against_votes'),agenda_data))                
                 total_score             = sum(map(attrgetter('score'),agenda_data))
                 current_mks_data        = indexby(summaries['MK'],attrgetter('mk_id'))
                 # calculate results per mk
@@ -526,15 +528,17 @@ class Agenda(models.Model):
                 for mk_id in mk_results.keys():
                     mk_data     = current_mks_data[mk_id]
                     if mk_data:
-                        mk_votes    = sum(map(attrgetter('votes'),mk_data))
-                        mk_volume   = 100*mk_votes/total_votes
-                        mk_score    = 100*sum(map(attrgetter('score'),mk_data))/total_score
-                        rangeMkResults.append((mk_id,mk_votes,mk_score,mk_volume))
+                        mk_votes            = sum(map(attrgetter('votes'),mk_data))
+                        mk_for_votes        = sum(map(attrgetter('for_votes'),mk_data))
+                        mk_against_votes    = sum(map(attrgetter('against_votes'),mk_data))
+                        mk_volume           = 100*mk_votes/total_votes
+                        mk_score            = 100*sum(map(attrgetter('score'),mk_data))/total_score if total_score != 0 else 0
+                        rangeMkResults.append((mk_id,mk_votes,mk_for_votes,mk_against_votes,mk_score,mk_volume))
                     else:
-                        rangeMkResults.append(tuple([mk_id]+[0]*3))
+                        rangeMkResults.append(tuple([mk_id]+[0]*5))
                 # sort results by score descending
-                for rank,(mk_id,mk_votes,mk_score,mk_volume) in enumerate(sorted(rangeMkResults,key=itemgetter(2,0),reverse=True)):
-                    mk_range_data = dict(score=mk_score,rank=rank,volume=mk_volume,numvotes=mk_votes)
+                for rank,(mk_id,mk_votes,mk_for_votes,mk_against_votes,mk_score,mk_volume) in enumerate(sorted(rangeMkResults,key=itemgetter(4,0),reverse=True)):
+                    mk_range_data = dict(score=mk_score,rank=rank,volume=mk_volume,numvotes=mk_votes,numforvotes=mk_for_votes,numagainstvotes=mk_against_votes)
                     if len(ranges)==1:
                         mk_results[mk_id]=mk_range_data
                     else:
@@ -609,6 +613,8 @@ class SummaryAgenda(models.Model):
     summary_type    = models.CharField(max_length=2, choices=SUMMARY_TYPES)
     score           = models.FloatField(default=0.0)
     votes           = models.BigIntegerField(default=0)
+    for_votes       = models.BigIntegerField(default=0)
+    against_votes   = models.BigIntegerField(default=0)
     mk              = models.ForeignKey(Member,blank=True, null=True, related_name='agenda_summaries')
     db_created      = models.DateTimeField(auto_now_add=True)
     db_updated      = models.DateTimeField(auto_now=True)

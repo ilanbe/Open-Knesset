@@ -8,6 +8,8 @@ from tastypie.resources import ModelResource
 from tastypie.throttle import CacheThrottle
 from tastypie.serializers import Serializer
 
+import ujson
+
 # are we using DummyCache ?
 _cache = getattr(settings, 'CACHES', {})
 _cache_default = _cache.get('default')
@@ -38,7 +40,8 @@ class IterJSONAndCSVSerializer(Serializer):
         options = options or {}
 
         data = self.to_simple(data, options)
-        return ''.join(json.DjangoJSONEncoder(sort_keys=True).iterencode(data))
+        return ujson.dumps(data)
+        # return ''.join(json.DjangoJSONEncoder(sort_keys=True).iterencode(data))
 
     def to_csv(self, data, options=None):
         options = options or {}
@@ -52,6 +55,7 @@ class IterJSONAndCSVSerializer(Serializer):
         #   if data contains an 'objects' key, refer to it's value as a list of objects.
         #   else, treat data as a single object itself
         objects = data.get('objects', [data])
+
         #   Use the first row for getting the headers
         first =  objects[0] if objects else None
         if first:
@@ -101,8 +105,8 @@ class BaseResource(ModelResource):
             if getattr(self._meta, 'include_absolute_url', False):
                 field_names.append('absolute_url')
 
-            fields = dict((name, obj) for name, obj in self.fields.iteritems()
-                          if name in field_names)
+            fields = {name:obj for name, obj in self.fields.iteritems()
+                          if name in field_names}
         else:
             fields = None
 
@@ -175,7 +179,7 @@ class BaseResource(ModelResource):
             bundle.data[field_name] = field_object.dehydrate(bundle)
 
             # Check for an optional method to do further dehydration.
-            method = getattr(self, "dehydrate_%s" % field_name, None)
+            method = getattr(self, "dehydrate_{}".format(field_name), None)
 
             if method:
                 bundle.data[field_name] = method(bundle)

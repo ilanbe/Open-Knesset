@@ -33,14 +33,18 @@ class Command(NoArgsCommand):
     from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'email@example.com')
     days_back = getattr(settings, 'DEFAULT_NOTIFICATION_DAYS_BACK', 10)
     lang = getattr(settings, 'LANGUAGE_CODE', 'he')
-    domain = Site.objects.get_current().domain
+
+    @property
+    def domain(self):
+        if not hasattr(self, '_domain'):
+            self._domain = Site.objects.get_current().domain
+        return self._domain
 
     option_list = NoArgsCommand.option_list + (
         make_option('--daily', action='store_true', dest='daily',
             help="send notifications to users that requested a daily update"),
         make_option('--weekly', action='store_true', dest='weekly',
             help="send notifications to users that requested a weekly update"))
-
 
     def agenda_update(self, agenda):
         ''' generate the general update email for this agenda.
@@ -71,7 +75,6 @@ class Command(NoArgsCommand):
             return (model, _('Other Updates'), '<h2>%s</h2>' % _('Other Updates'))
 
     def get_email_for_user(self, user):
-        logger.debug('get_email_for_user %d' % user.id)
         updates = dict(zip(self.update_models, ([] for x in self.update_models))) # will contain the updates to be sent
         updates_html = dict(zip(self.update_models, ([] for x in self.update_models)))
         follows = Follow.objects.filter(user=user) # everything this user is following

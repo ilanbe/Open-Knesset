@@ -37,7 +37,7 @@
       <div class="row"><div class="span12"><div class="alert alert-error">{% trans 'This is a development server, all data in it should be considered fictional.  users are kindly requested to go to '%}<a href="http://oknesset.org/">http://oknesset.org/</a></div></div></div>
 {% endif %}
       <div class="row">
-        <div id="logo" class="span4">
+        <div id="logo" class="span4 clearfix">
           <a href="/">
             <img src="{% static "img/oknesset-logo.png" %}" alt="oknesset-logo" />
             <span>כנסת פתוחה</span>
@@ -56,11 +56,11 @@
             </span>
           </a>
           <ul class="dropdown-menu" role="menu" aria-labelledby="dLabel">
-            <li><a href="{% url 'edit-profile' %}">{% trans 'Edit Profile' %}</a></li>
-            <li><a href="{% url 'logout' %}?next={{request.get_full_path}}">{% trans 'Logout' %}</a></li>
+            <li><a href="{% url 'edit-profile' %}"><i class="fa fa-edit fa-flip-horizontal"></i> {% trans 'Edit Profile' %}</a></li>
+            <li><a href="{% url 'logout' %}?next={{request.get_full_path}}"><i class="fa fa-sign-out fa-flip-horizontal"></i> {% trans 'Logout' %}</a></li>
           </ul>
           {% else %}
-              <a href='{% url 'login' %}?next={{request.get_full_path}}'>{% trans 'login' %}</a>
+          <a href='{% url 'login' %}?next={{request.get_full_path}}'><i class="fa fa-sign-in fa-flip-horizontal"></i> {% trans 'login' %}</a>
           {% endif %}
         </div>
       </div>
@@ -127,6 +127,7 @@
                         <li><a href="{% url 'committee-list' %}">{% trans 'Committees' %}</a> </li>
                         <li><a href="{% url 'plenum' %}">מליאה</a></li>
                         <li><a href="{% url 'agenda-list' %}">{% trans 'Agendas' %}</a> </li>
+                        <li><a href="{% url 'about' %}">{% trans 'About' %}</a> </li>
                     </ul>
                 </nav>
                 <div id="search-bottom" class="span4">
@@ -172,8 +173,8 @@
             </div>
             <div class="row">
                 <div class="span9">
-                    {% trans "Some rights reserved. Using data from the site requires credit" %}
-                    <a href="{% url 'about' %}">{% trans "Details in the link" %}</a>
+                    {% trans "Some rights reserved. Using data from the site requires credit" %} - 
+                    <a href="{% url 'about' %}#terms">{% trans "Details in the link" %}</a>
                 </div>
                 <div class="span3">
                 <a href="https://play.google.com/store/apps/details?id=org.oknesset" target="_blank">
@@ -205,7 +206,6 @@
 
     <script src="{% url 'django.views.i18n.javascript_catalog' %}"></script>
     <script src="{% static "js/jquery.jgrowl.js" %}"></script>
-    <script src="{% static "js/raphael-min.js" %}"></script>
     <script src="{% static "js/okhelptexts.js" %}"></script>
     <script src="{% static "js/togglehelpextended.js" %}"></script>
 
@@ -270,11 +270,28 @@
           ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
           var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
         })();
+
+        //HASADNA PIWIK ANALYTICS
+        var _paq = _paq || [];
+        _paq.push(['trackPageView']);
+        _paq.push(['enableLinkTracking']);
+        (function() {
+          var u=(("https:" == document.location.protocol) ? "https" : "http") + "://visitors.hasadna.org.il/";
+          _paq.push(['setTrackerUrl', u+'piwik.php']);
+          _paq.push(['setSiteId', 2]);
+          var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0]; g.type='text/javascript';
+          g.defer=true; g.async=true; g.src=u+'piwik.js'; s.parentNode.insertBefore(g,s);
+        })();
+
     {% endif %}
     </script>
     {% block extrajs %}{% endblock %}
     {% block footer %}
     {% endblock %}
+
+    <!--HASADNA PIWIK ANALYTICS-->
+    <noscript><p><img src="http://visitors.hasadna.org.il/piwik.php?idsite=2" style="border:0;" alt="" /></p></noscript>
+
     </body>
 </html>
 

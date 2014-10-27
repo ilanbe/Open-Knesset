@@ -2,7 +2,7 @@
 import re, itertools, logging, random
 from datetime import date, timedelta
 
-from django.db import models
+from django.db import models, IntegrityError
 from django.contrib.contenttypes import generic
 from django import forms
 from django.utils.translation import ugettext_lazy as _
@@ -12,13 +12,14 @@ from django.db.models import Count, Q
 from django.core.cache import cache
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.contrib.comments.models import Comment
 
 from tagging.models import Tag, TaggedItem
 from tagging.forms import TagField
 import voting
 from tagging.utils import get_tag
 from actstream import Action
-from actstream.models import action
+from actstream.models import action, Follow
 
 from mks.models import Member, Party, Knesset
 from tagvotes.models import TagVote
@@ -60,7 +61,11 @@ class PartyVotingStatistics(models.Model):
     party = models.OneToOneField('mks.Party', related_name='voting_statistics')
 
     def votes_against_party_count(self):
-        return VoteAction.objects.filter(member__current_party=self.party, against_party=True).count()
+        d = Knesset.objects.current_knesset().start_date
+        return VoteAction.objects.filter(
+            vote__time__gt=d,
+            member__current_party=self.party,
+            against_party=True).count()
 
     def votes_count(self):
         d = Knesset.objects.current_knesset().start_date
@@ -69,23 +74,33 @@ class PartyVotingStatistics(models.Model):
             vote__time__gt=d).exclude(type='no-vote').count()
 
     def votes_per_seat(self):
-        return round(float(self.votes_count()) / self.party.number_of_seats,1)
+        return round(float(self.votes_count()) / self.party.number_of_seats, 1)
 
     def discipline(self):
         total_votes = self.votes_count()
         if total_votes:
             votes_against_party = self.votes_against_party_count()
-            return round(100.0*(total_votes - votes_against_party) / total_votes, 1)
+            return round(100.0 * (total_votes - votes_against_party) /
+                         total_votes, 1)
         return _('N/A')
 
-    def coalition_discipline(self): # if party is in opposition this actually returns opposition_discipline
+    def coalition_discipline(self):  # if party is in opposition this actually
+                                     # returns opposition_discipline
+        d = Knesset.objects.current_knesset().start_date
         total_votes = self.votes_count()
         if total_votes:
             if self.party.is_coalition:
-                votes_against_coalition = VoteAction.objects.filter(member__current_party=self.party, against_coalition=True).count()
+                votes_against_coalition = VoteAction.objects.filter(
+                    vote__time__gt=d,
+                    member__current_party=self.party,
+                    against_coalition=True).count()
             else:
-                votes_against_coalition = VoteAction.objects.filter(member__current_party=self.party, against_opposition=True).count()
-            return round(100.0*(total_votes - votes_against_coalition) / total_votes, 1)
+                votes_against_coalition = VoteAction.objects.filter(
+                    vote__time__gt=d,
+                    member__current_party=self.party,
+                    against_opposition=True).count()
+            return round(100.0 * (total_votes - votes_against_coalition) /
+                         total_votes, 1)
         return _('N/A')
 
     def __unicode__(self):
@@ -142,6 +157,7 @@ class MemberVotingStatistics(models.Model):
 class VoteAction(models.Model):
     type   = models.CharField(max_length=10, choices=VOTE_ACTION_TYPE_CHOICES)
     member = models.ForeignKey('mks.Member')
+    party  = models.ForeignKey('mks.Party')
     vote   = models.ForeignKey('Vote')
     against_party = models.BooleanField(default=False)
     against_coalition = models.BooleanField(default=False)
@@ -151,6 +167,12 @@ class VoteAction(models.Model):
     def __unicode__(self):
         return u"{} {} {}".format(self.member.name, self.type, self.vote.title)
 
+    def save(self, **kwargs):
+        if not self.party_id:
+            party = self.member.party_at(self.vote.time.date())
+            if party:
+                self.party_id = party.id
+        super(VoteAction,self).save(**kwargs)
 
 class VoteManager(models.Manager):
     # TODO: add i18n to the types so we'd have
@@ -210,6 +232,8 @@ class Vote(models.Model):
     src_id = models.IntegerField(null=True, blank=True)
     src_url = models.URLField(max_length=1024, null=True, blank=True)
     title = models.CharField(max_length=1000)
+    vote_type = models.CharField(max_length=32, choices=TYPE_CHOICES,
+                                 blank=True)
     time = models.DateTimeField(db_index=True)
     time_string = models.CharField(max_length=100)
     votes = models.ManyToManyField('mks.Member', related_name='votes', blank=True, through='VoteAction')
@@ -263,10 +287,15 @@ class Vote(models.Model):
     def against_own_bill_votes(self):
         return self.votes.filter(voteaction__against_own_bill=True)
 
-    def vote_type(self):
+    def _vote_type(self):
+        if type(self.title) == str:
+            f = str.decode
+        else:  # its already unicode, do nothing
+            f = lambda x, y: x
         for vtype, vtype_prefix in VoteManager.VOTE_TYPES.iteritems():
-            if self.title.startswith(vtype_prefix):
-                return dict(TYPE_CHOICES)[vtype]
+            if f(self.title, 'utf8').startswith(vtype_prefix):
+                return vtype
+        return ''
 
     def short_summary(self):
         if self.summary is None:
@@ -395,6 +424,7 @@ class Vote(models.Model):
         self.against_votes_count = VoteAction.objects.filter(vote=self,type='against').count()
         self.controversy = min(self.for_votes_count or 0,
                                self.against_votes_count or 0)
+        self.vote_type = self._vote_type()
         self.save()
 
 
@@ -479,7 +509,9 @@ class BillManager(models.Manager):
     def filter_and_order(self, *args, **kwargs):
         stage = kwargs.get('stage', None)
         member = kwargs.get('member', None)
-        booklet = kwargs.get('booklet', None)
+        pp_id = kwargs.get('pp_id', None)
+        knesset_booklet = kwargs.get('knesset_booklet', None)
+        gov_booklet = kwargs.get('gov_booklet', None)
         changed_after = kwargs.get('changed_after', None)
         changed_before = kwargs.get('changed_before', None)
 
@@ -501,10 +533,30 @@ class BillManager(models.Manager):
             elif kwargs['tagged'] != 'all':
                 qs = TaggedItem.objects.get_by_model(qs,get_tag(kwargs['tagged']))
 
-        if booklet:
-            kps = KnessetProposal.objects.filter(booklet_number=booklet).values_list('id', flat=True)
+        if pp_id:
+            pps = PrivateProposal.objects.filter(
+                    proposal_id=pp_id).values_list(
+                            'id', flat=True)
+            if pps:
+                qs = qs.filter(proposals__in=pps)
+            else:
+                qs = qs.none()
+        if knesset_booklet:
+            kps = KnessetProposal.objects.filter(
+                    booklet_number=knesset_booklet).values_list(
+                            'id', flat=True)
             if kps:
                 qs = qs.filter(knesset_proposal__in=kps)
+            else:
+                qs = qs.none()
+
+        if gov_booklet:
+            gps = GovProposal.objects.filter(
+                    booklet_number=gov_booklet).values_list('id', flat=True)
+            if gps:
+                qs = qs.filter(gov_proposal__in=gps)
+            else:
+                qs = qs.none()
 
         if changed_after:
             qs = qs.filter(stage_date__gte=changed_after)
@@ -568,21 +620,25 @@ class Bill(models.Model):
     def merge(self,another_bill):
         """Merges another_bill into self, and delete another_bill"""
         if not self.id:
-            logger.debug('trying to merge into a bill with id=None, title=%s', self.title)
+            logger.debug('trying to merge into a bill with id=None, title=%s',
+                         self.title)
             self.save()
         if not another_bill.id:
-            logger.debug('trying to merge a bill with id=None, title=%s', another_bill.title)
+            logger.debug('trying to merge a bill with id=None, title=%s',
+                         another_bill.title)
             another_bill.save()
 
         if self is another_bill:
             logger.debug('abort merging bill %d into itself' % self.id)
             return
-        logger.debug('merging bill %d into bill %d' % (another_bill.id, self.id))
+        logger.debug('merging bill %d into bill %d' % (another_bill.id,
+                                                       self.id))
 
         other_kp = KnessetProposal.objects.filter(bill=another_bill)
         my_kp = KnessetProposal.objects.filter(bill=self)
         if my_kp and other_kp:
-            logger.debug('abort merging bill %d into bill %d, because both have KPs' % (another_bill.id, self.id))
+            logger.debug('abort merging bill %d into bill %d, because both '
+                         'have KPs' % (another_bill.id, self.id))
             return
 
         for pv in another_bill.pre_votes.all():
@@ -603,6 +659,45 @@ class Bill(models.Model):
         if other_kp:
             other_kp[0].bill = self
             other_kp[0].save()
+
+        bill_ct = ContentType.objects.get_for_model(self)
+        Comment.objects.filter(content_type=bill_ct,
+                               object_pk=another_bill.id).update(
+                                   object_pk=self.id)
+        for v in voting.models.Vote.objects.filter(content_type=bill_ct,
+                                                   object_id=another_bill.id):
+            if voting.models.Vote.objects.filter(content_type=bill_ct,
+                                                 object_id=self.id,
+                                                 user=v.user).count() == 0:
+                # only if this user did not vote on self, copy the vote from
+                # another_bill
+                v.object_id = self.id
+                v.save()
+        for f in Follow.objects.filter(content_type=bill_ct,
+                                       object_id=another_bill.id):
+            try:
+                f.object_id = self.id
+                f.save()
+            except IntegrityError:  # self was already being followed by the
+                                    # same user
+                pass
+        for ti in TaggedItem.objects.filter(content_type=bill_ct,
+                                            object_id=another_bill.id):
+            if ti.tag not in self.tags:
+                ti.object_id = self.id
+                ti.save()
+        for ab in another_bill.agendabills.all():
+            try:
+                ab.bill = self
+                ab.save()
+            except IntegrityError:  # self was already in this agenda
+                pass
+        for be in another_bill.budget_ests.all():
+            try:
+                be.bill = self
+                be.save()
+            except IntegrityError:  # same user already estimated self
+                pass
         another_bill.delete()
         self.update_stage()
 

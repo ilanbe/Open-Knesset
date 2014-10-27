@@ -10,13 +10,14 @@ from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Max,Count
 
-from mks.models import Member,Party,Membership,WeeklyPresence
+from mks.models import Member, Party, Membership, WeeklyPresence, Knesset
 from persons.models import Person,PersonAlias
 from laws.models import (Vote, VoteAction, Bill, Law, PrivateProposal,
      KnessetProposal, GovProposal, GovLegislationCommitteeDecision)
 from links.models import Link
 from committees.models import Committee,CommitteeMeeting
 from knesset.utils import cannonize
+from mks.utils import get_all_mk_names
 
 import mk_info_html_parser as mk_parser
 import parse_presence, parse_laws, mk_roles_parser, parse_remote
@@ -57,7 +58,8 @@ class Command(NoArgsCommand):
             help="online update of data."),
         make_option('--committees', action='store_true', dest='committees',
             help="online update of committees data."),
-
+        make_option('--update-run-only', action='store', dest='update-run-only',
+            help="only run update for the provided functions. Should contain comma-seperated list of functions to run.")
     )
     help = "Downloads data from sources, parses it and loads it to the Django DB."
 
@@ -143,7 +145,7 @@ class Command(NoArgsCommand):
                         logger.error(e)
 
             if v.full_text == None:
-                self.get_full_text(v)
+                self.get_approved_bill_text_for_vote(v)
         logger.debug("finished updating laws data")
 
     def update_vote_from_page(self, vote_id, vote_src_url, page):
@@ -197,7 +199,7 @@ class Command(NoArgsCommand):
                 continue
 
             # add the current member's vote
-            va,created = VoteAction.objects.get_or_create(vote = v, member = m, type = vote)
+            va,created = VoteAction.objects.get_or_create(vote = v, member = m, type = vote, party = m.current_party)
             if created:
                 va.save()
 
@@ -616,7 +618,7 @@ class Command(NoArgsCommand):
 
                 # add the current member's vote
 
-                va,created = VoteAction.objects.get_or_create(vote = v, member = m, type = vote)
+                va,created = VoteAction.objects.get_or_create(vote = v, member = m, type = vote, party = m.current_party)
                 if created:
                     va.save()
 
@@ -838,16 +840,7 @@ class Command(NoArgsCommand):
         (last_page, page_res) = self.get_protocols_page(page, page_num)
         res = page_res[:]
 
-        mk_names = []
-        mks = []
-        mk_persons = Person.objects.filter(
-            mk__isnull=False,
-            mk__current_party__isnull=False).select_related('mk')
-        mks.extend([person.mk for person in mk_persons])
-        mk_aliases = PersonAlias.objects.filter(person__in=mk_persons)
-        mk_names.extend(mk_persons.values_list('name',flat=True))
-        mk_names.extend(mk_aliases.values_list('name',flat=True))
-        mks.extend([alias.person.mk for alias in mk_aliases])
+        mks, mk_names = get_all_mk_names()
         while (not last_page) and (page_num < max_page):
             page_num += 1
             params = "__EVENTTARGET=gvProtocol&__EVENTARGUMENT=Page%%24%d&__LASTFOCUS=&__VIEWSTATE=%s&ComId=-1&knesset_id=-1&DtFrom=24%%2F02%%2F2009&DtTo=&subj=&__EVENTVALIDATION=%s" % (page_num, view_state, event_validation)
@@ -906,32 +899,9 @@ class Command(NoArgsCommand):
             if updated_protocol:
                 cm.create_protocol_parts()
 
-            self.find_attending_members(cm, mks, mk_names)
+            cm.find_attending_members(mks, mk_names)
 
             self.get_bg_material(cm)
-
-    def find_attending_members(self, cm, mks, mk_names):
-        try:
-            r = re.search("חברי הו?ועדה(.*?)(\n[^\n]*(ייעוץ|יועץ|רישום|רש(מים|מות|מו|מ|מת|ם|מה)|קצר(נים|ניות|ן|נית))[\s|:])".decode('utf8'),cm.protocol_text, re.DOTALL).group(1)
-            s = r.split('\n')
-            for (i, name) in enumerate(mk_names):
-                if not mks[i].party_at(cm.date):  # not a member at time of
-                                                  # this meeting?
-                    continue  # then don't search for this MK.
-                for s0 in s:
-                    if s0.find(name) >= 0:
-                        cm.mks_attended.add(mks[i])
-        except Exception:
-            exceptionType, exceptionValue, exceptionTraceback = sys.exc_info()
-            logger.debug("%s%s",
-                         ''.join(traceback.format_exception(exceptionType,
-                                                            exceptionValue,
-                                                            exceptionTraceback)
-                                ),
-                         '\nCommitteeMeeting.id=' + str(cm.id))
-        logger.debug('meeting %d now has %d attending members' % (
-            cm.id,
-            cm.mks_attended.count()))
 
     def get_committee_protocol_text(self, url):
         logger.debug('get_committee_protocol_text. url=%s' % url)
@@ -973,44 +943,56 @@ class Command(NoArgsCommand):
                 logger.debug('committee meeting link %d created' % l.id)
 
 
-    def get_full_text(self,v):
+    def get_approved_bill_text(self, url):
+        """Retrieve the RTL file in the given url, assume approved bill file
+           format, and return the text from the file.
+        """
+        file_str = StringIO()
+        file_str.write(urllib2.urlopen(url).read())
+        doc = Rtf15Reader.read(file_str)
+        content_list = []
+        is_bold = False
+        for j in [1, 2]:
+            for i in range(len(doc.content[j].content)):
+                part = doc.content[j].content[i]
+                if 'bold' in part.properties:  # this part is bold
+                    if not is_bold:  # last part was not bold
+                        content_list.append('<br/><b>')  # add newline and bold
+                        is_bold = True  # remember that we are now in bold
+                    content_list.append(part.content[0] + ' ')  # add this part
+
+                else:  # this part is not bold
+                    if len(part.content[0]) <= 1:
+                        # this is a dummy node, ignore it
+                        pass
+                    else:  # this is a real node
+                        if is_bold:  # last part was bold. need to unbold
+                            content_list.append('</b>')
+                            is_bold = False
+                        # add this part in a new line
+                        content_list.append('<br/>' + part.content[0])
+
+            content_list.append('<br/>')
+        return ''.join(content_list)
+
+    def get_approved_bill_text_for_vote(self, v):
         try:
-            l = Link.objects.get(object_pk=str(v.id), title=u'מסמך הצעת החוק באתר הכנסת')
+            l = Link.objects.get(object_pk=str(v.id),
+                                 title=u'מסמך הצעת החוק באתר הכנסת')
         except Exception:
             return
         try:
             if l.url.endswith('.rtf'):
-                logger.info('get_full_text url=%s' % l.url)
-                file_str = StringIO()
-                file_str.write(urllib2.urlopen(l.url).read())
-                doc = Rtf15Reader.read(file_str)
-                content_list = []
-                is_bold = False
-                for j in [1,2]:
-                    for i in range(len(doc.content[j].content)):
-                        part = doc.content[j].content[i]
-                        if 'bold' in part.properties:           # this part is bold
-                            if not is_bold:                          # last part was not bold
-                                content_list.append('<br/><b>')         # add new line and bold
-                                is_bold = True                          # remember that we are now in bold
-                            content_list.append(part.content[0]+' ') # add this part
-
-                        else:                                   # this part is not bold
-                            if len(part.content[0]) <= 1:           # this is a dummy node, ignore it
-                                pass
-                            else:                                   # this is a real node
-                                if is_bold:                         # last part was bold. need to unbold
-                                    content_list.append('</b>')
-                                    is_bold = False
-                                content_list.append('<br/>'+part.content[0]) #add this part in a new line
-
-                    content_list.append('<br/>')
-
-                v.full_text = ''.join(content_list)
+                logger.info('get_approved_bill_text_for_vote url=%s' % l.url)
+                v.full_text = self.get_approved_bill_text(l.url)
                 v.save()
         except Exception:
             exceptionType, exceptionValue, exceptionTraceback = sys.exc_info()
-            logger.error("%s%s", ''.join(traceback.format_exception(exceptionType, exceptionValue, exceptionTraceback)), '\nvote.title='+v.title.encode('utf8'))
+            logger.error("%s%s",
+                         ''.join(traceback.format_exception(exceptionType,
+                                                            exceptionValue,
+                                                            exceptionTraceback)
+                                 ), '\nvote.title=' + v.title.encode('utf8'))
 
     def dump_to_file(self):
         f = open('votes.tsv','wt')
@@ -1104,11 +1086,25 @@ class Command(NoArgsCommand):
 
     def parse_laws(self, private_proposals_days=None, last_booklet=None):
         """parse private proposal, knesset proposals and gov proposals
-           private_proposals_days - override default "days-back" to look for in private proposals.
+           private_proposals_days - override default "days-back" to look for in
+                                    private proposals.
                                     should be the number of days back to look
            last_booklet - last knesset proposal booklet that you already have.
         """
-        mks = Member.objects.values('id','name')
+        k = Knesset.objects.current_knesset()
+        mks = list(Member.objects.values('id', 'name'))
+
+        # add MK alias names, from person alias table
+        mk_persons = Person.objects.filter(
+            mk__isnull=False,
+            mk__current_party__isnull=False).select_related('mk')
+        mk_aliases = PersonAlias.objects.filter(person__in=mk_persons)
+        for mk_alias in mk_aliases:
+            mks.append({'id': mk_alias.person.mk_id,
+                        'name': mk_alias.name})
+
+        # pre-calculate cannonical represention of all names (without spaces,
+        # and funcky chars - makes more robust comparisons)
         for mk in mks:
             mk['cn'] = cannonize(mk['name'])
 
@@ -1119,7 +1115,7 @@ class Command(NoArgsCommand):
         else:
             d = PrivateProposal.objects.aggregate(Max('date'))['date__max']
             if not d:
-                d = datetime.date(2009,2,24)
+                d = k.start_date
             days = (datetime.date.today() - d).days
 
 
@@ -1155,23 +1151,27 @@ class Command(NoArgsCommand):
 
                 # update proposers and joiners
                 for m0 in proposal['proposers']:
+                    cm0 = cannonize(m0)
                     found = False
                     for mk in mks:
-                        if cannonize(m0)==mk['cn']:
+                        if cm0 == mk['cn']:
                             pl.proposers.add(Member.objects.get(pk=mk['id']))
                             found = True
                             break
                     if not found:
-                        logger.warn(u"can't find proposer: %s" % m0)
+                        logger.warn(u"can't find proposer: %s (%s)" % (m0,
+                                                                       cm0))
                 for m0 in proposal['joiners']:
+                    cm0 = cannonize(m0)
                     found = False
                     for mk in mks:
-                        if cannonize(m0)==mk['cn']:
+                        if cm0 == mk['cn']:
                             pl.joiners.add(Member.objects.get(pk=mk['id']))
                             found = True
                             break
                     if not found:
-                        logger.warn(u"can't find joiner: %s" % m0)
+                        logger.warn(u"can't find joiner: %s (%s)" % (m0,
+                                                                     cm0))
 
                 # try to look for similar PPs already created:
                 p = PrivateProposal.objects.filter(title=title,law=law).exclude(id=pl.id)
@@ -1217,9 +1217,13 @@ class Command(NoArgsCommand):
                 title += ' ' + proposal['comment']
             if len(title)<=1:
                 title = 'חוק חדש'.decode('utf8')
-            (kl,created) = KnessetProposal.objects.get_or_create(booklet_number=proposal['booklet'], knesset_id=18,
-                                                                 source_url=proposal['link'],
-                                                                 title=title, law=law, date=proposal['date'])
+            (kl,created) = KnessetProposal.objects.get_or_create(
+                booklet_number=proposal['booklet'],
+                knesset_id=k.number,
+                source_url=proposal['link'],
+                title=title,
+                law=law,
+                date=proposal['date'])
             if created:
                 kl.save()
 
@@ -1232,7 +1236,7 @@ class Command(NoArgsCommand):
                     except:
                         logger.warn('knesset proposal %d doesn\'t have knesset id' % kl.id)
                         continue
-                    if knesset_id != 18:
+                    if knesset_id != k.number:
                         logger.warn('knesset proposal %d has wrong knesset id (%d)' % (kl.id, knesset_id))
                         continue
                     orig_id = int(orig.split('/')[0]) # find the PP id
@@ -1517,6 +1521,17 @@ class Command(NoArgsCommand):
         laws = options.get('laws',False)
         committees = options.get('committees', False)
 
+        verbosity = int(options.get('verbosity', '0'))
+        if verbosity > 0:
+            levels = {
+                1: logging.WARN,
+                2: logging.INFO,
+                3: logging.DEBUG
+            }
+            handler = logging.StreamHandler()
+            handler.setLevel(levels[verbosity])
+            logger.addHandler(handler)
+
         if all_options:
             download = True
             load = True
@@ -1553,17 +1568,37 @@ class Command(NoArgsCommand):
             self.dump_to_file()
 
         if update:
-            self.update_votes()
-            self.update_laws_data()
-            self.update_presence()
-            self.get_protocols()
-            self.parse_laws()
-            self.find_proposals_in_other_data()
-            self.merge_duplicate_laws()
-            self.update_mk_role_descriptions()
-            self.update_mks_is_current()
-            self.update_gov_law_decisions()
-            self.correct_votes_matching()
+            update_run_only = options.get('update-run-only', '')
+            if update_run_only:
+                try:
+                    update_run_only = update_run_only.split(',')
+                except AttributeError, e:
+                    logger.error("Error in syncdata update:" + e)
+            else:
+                update_run_only = None
+            for func in ['update_votes',
+                         'update_laws_data',
+                         'update_presence',
+                         'get_protocols',
+                         'parse_laws',
+                         'find_proposals_in_other_data',
+                         'merge_duplicate_laws',
+                         'update_mk_role_descriptions',
+                         'update_mks_is_current',
+                         'update_gov_law_decisions',
+                         'correct_votes_matching']:
+                # in case update_run_only is none, we run all stages
+                if (update_run_only is None) or (func in update_run_only):
+                    try:
+                        logger.debug('update: running %s', func)
+                        self.__getattribute__(func).__call__()
+                    except:
+                        exceptionType, exceptionValue, exceptionTraceback = sys.exc_info()
+                        logger.error("Caught execption in syncdata update phase %s\n%s",
+                                     func,
+                                     ''.join(traceback.format_exception(exceptionType,
+                                                                        exceptionValue,
+                                                                        exceptionTraceback)))
             logger.debug('finished update')
 
         if committees:

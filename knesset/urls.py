@@ -22,12 +22,13 @@ from persons.urls import personsurlpatterns
 from mks.views import get_mk_entry, mk_is_backlinkable
 from laws.models import Bill
 from polyorg.urls import polyorgurlpatterns
+from lobbyists.urls import lobbyistpatterns
 
 from auxiliary.views import (
     main, post_annotation, post_details, post_feedback,
     RobotsView, AboutView, CommentsView, add_tag_to_object,
     remove_tag_from_object, create_tag_and_add_to_item, help_page,
-    TagList, TagDetail)
+    TagList, TagDetail, suggest_tag_post, untagged_objects)
 
 admin.autodiscover()
 
@@ -46,8 +47,7 @@ urlpatterns = patterns('',
     (r'^api/', include('apis.urls')),
     (r'^agenda/', include('agendas.urls')),
     (r'^users/', include('user.urls')),
-    (r'^badges/', include('badges.urls')),
-    url(r'', include('social_auth.urls')),
+    url('', include('social.apps.django_app.urls', namespace='social')),
     url(r'^help/$', help_page, name="help"),
     (r'^admin/', include(admin.site.urls)),
     (r'^comments/$', CommentsView.as_view()),
@@ -86,6 +86,7 @@ urlpatterns = patterns('',
     #url(r'^tags/(?P<app>\w+)/(?P<object_type>\w+)/(?P<object_id>\d+)/create-tag/$', create_tag_and_add_to_item, name='create-tag'),
     url(r'^tags/$', TagList.as_view(), name='tags-list'),
     url(r'^tags/(?P<slug>.*)/$', TagDetail.as_view(), name='tag-detail'),
+    url(r'^suggest-tag-post/$', suggest_tag_post, name='suggest-tag-post'),
     url(r'^uservote/bill/(?P<object_id>\d+)/(?P<direction>\-?\d+)/?$',
         vote_on_object, dict(
             model=Bill, template_object_name='bill',
@@ -98,9 +99,13 @@ urlpatterns = patterns('',
     (r'^tinymce/', include('tinymce.urls')),
     (r'^suggestions/', include('suggestions.urls')),
     url(r'^feedback/', post_feedback, name="feedback-post"),
+    url(r'^untagged/$', untagged_objects, name="untagged-objects"),
 )
 
 
-urlpatterns += mksurlpatterns + lawsurlpatterns + committeesurlpatterns + plenumurlpatterns
+urlpatterns += mksurlpatterns + lawsurlpatterns + committeesurlpatterns + plenumurlpatterns + lobbyistpatterns
 urlpatterns += staticfiles_urlpatterns() + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-urlpatterns += polyorgurlpatterns + personsurlpatterns
+# polyorg patterns are removed right now, the cache handling on it's views
+# seems broken, specially when trying to cache querysets
+# urlpatterns += polyorgurlpatterns + personsurlpatterns
+urlpatterns += personsurlpatterns

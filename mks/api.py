@@ -17,20 +17,34 @@ from video.utils import get_videos_queryset
 from video.api import VideoResource
 from links.models import Link
 from links.api import LinkResource
+from persons.api import RoleResource
+from persons.models import Person
 
 from django.db.models import Count
+
 
 class PartyResource(BaseResource):
     ''' Party API
     TBD: create a party app
     '''
+    knesset_id = fields.IntegerField('knesset_id', null=True)
 
     class Meta(BaseResource.Meta):
-        queryset = Party.objects.filter(
-            knesset=Knesset.objects.current_knesset())
+        queryset = Party.objects.all()
         allowed_methods = ['get']
         excludes = ['end_date', 'start_date']
         include_absolute_url = True
+
+    def get_object_list(self, request):
+        knesset = request.GET.get('knesset','current')
+        if knesset == 'current':
+            return super(PartyResource, self).get_object_list(request).filter(
+            knesset=Knesset.objects.current_knesset())
+        elif knesset == 'all':
+            return super(PartyResource, self).get_object_list(request)
+        else:
+            return super(PartyResource, self).get_object_list(request).filter(
+            knesset=Knesset.objects.current_knesset())
 
 class DictStruct:
     def __init__(self, **entries):
@@ -194,6 +208,10 @@ class MemberResource(BaseResource):
     bills_uri = fields.CharField()
     agendas_uri = fields.CharField()
     committees = fields.ListField()
+    detailed_roles = fields.ToManyField(RoleResource,
+            attribute = lambda b: Person.objects.get(mk=b.obj).roles.all(),
+            full = True,
+            null = True)
 
     def dehydrate_committees (self, bundle):
         temp_list = bundle.obj.committee_meetings.values("committee", "committee__name").annotate(Count("id")).order_by('-id__count')[:5]

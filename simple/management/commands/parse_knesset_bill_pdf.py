@@ -52,8 +52,8 @@ def parse_pdf_text(filename=None, url=None):
         return None
 
     m = clean_string(m.group(1).decode('utf8'))
-    m2 = re.findall('^(הצעת חוק.*?) . '.decode('utf8'), m, re.UNICODE | re.DOTALL | re.MULTILINE)
-    m3 = re.findall('^(חוק.*?) . '.decode('utf8'),m, re.UNICODE | re.DOTALL | re.MULTILINE)
+    m2 = re.findall('^(הצעת חוק.*?) \. '.decode('utf8'), m, re.UNICODE | re.DOTALL | re.MULTILINE)
+    m3 = re.findall('^(חוק.*?) \. '.decode('utf8'),m, re.UNICODE | re.DOTALL | re.MULTILINE)
     m2.extend(m3)
     for title in m2:
         law = {}
@@ -72,12 +72,12 @@ def parse_pdf_text(filename=None, url=None):
         if m:
             d = date(int(m.group(1)[::-1]), int(m.group(2)[::-1]), int(m.group(3)[::-1]))
 
-        m = re.search('הצעת חוק מס.*?\w+/\d+/\d+.*?[הועברה|הועברו]'.decode('utf8'), line.decode('utf8'), re.UNICODE)
+        m = re.search('[הצעת|הצעות] חוק מס.*?\d+/\d+.*?[הועברה|הועברו]'.decode('utf8'), line.decode('utf8'), re.UNICODE)
         if m:
             try:
                 result[count]['references'] = line
-                m2 = re.findall('\w+/\d+/\d+',line.decode('utf8'), re.UNICODE) # find IDs of original proposals
-                result[count]['original_ids'] = [a[-1:0:-1]+a[0] for a in m2] # reverse
+                m2 = re.findall('\d+/\d+',line.decode('utf8'), re.UNICODE) # find IDs of original proposals
+                result[count]['original_ids'] = [a[::-1] for a in m2]
                 count += 1
             except IndexError:
                 exceptionType, exceptionValue, exceptionTraceback = sys.exc_info()
